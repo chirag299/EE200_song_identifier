@@ -19,30 +19,40 @@ def build_cloud_database():
     
     audio_files = sorted([f for f in os.listdir(database_folder) if f.endswith('.mp3')])
     song_database = {}
-    song_mapping = {idx: os.path.splitext(f)[0] for idx, f in enumerate(audio_files)}
+    song_mapping = {}
     
     for song_idx, filename in enumerate(audio_files):
-        song_path = os.path.join(database_folder, filename)
-        y, fs = librosa.load(song_path, sr=TARGET_SR)
-        _, _, Sxx = signal.spectrogram(y, fs, nperseg=2048)
-        Sxx_db = 10 * np.log10(Sxx + 1e-10)
-        
-        local_max = maximum_filter(Sxx_db, size=NEIGHBORHOOD_SIZE) == Sxx_db
-        peaks_mask = local_max & (Sxx_db > (np.mean(Sxx_db) + DYNAMIC_OFFSET_DB))
-        f_coor, t_coor = np.where(peaks_mask)
-        peaks = list(zip(t_coor, f_coor))
-        
-        num_peaks = len(peaks)
-        for i in range(num_peaks):
-            t1, f1 = peaks[i]
-            for j in range(i + 1, min(i + 15, num_peaks)): 
-                t2, f2 = peaks[j]
-                dt = t2 - t1
-                if 1 <= dt <= 30: 
-                    hash_key = (f1, f2, dt)
-                    if hash_key not in song_database:
-                        song_database[hash_key] = []
-                    song_database[hash_key].append((song_idx, t1))
+        try:
+            song_path = os.path.join(database_folder, filename)
+
+            y, fs = librosa.load(song_path, sr=TARGET_SR)
+            _, _, Sxx = signal.spectrogram(y, fs, nperseg=2048)
+            Sxx_db = 10 * np.log10(Sxx + 1e-10)
+            
+            local_max = maximum_filter(Sxx_db, size=NEIGHBORHOOD_SIZE) == Sxx_db
+            peaks_mask = local_max & (Sxx_db > (np.mean(Sxx_db) + DYNAMIC_OFFSET_DB))
+            f_coor, t_coor = np.where(peaks_mask)
+            peaks = list(zip(t_coor, f_coor))
+            
+            num_peaks = len(peaks)
+            for i in range(num_peaks):
+                t1, f1 = peaks[i]
+                for j in range(i + 1, min(i + 15, num_peaks)): 
+                    t2, f2 = peaks[j]
+                    dt = t2 - t1
+                    if 1 <= dt <= 30: 
+                        hash_key = (f1, f2, dt)
+                        if hash_key not in song_database:
+                            song_database[hash_key] = []
+                        song_database[hash_key].append((song_idx, t1))
+    
+            song_mapping[song_idx] = os.path.splitext(filename)[0]
+            
+        except Exception as file_error:
+
+            print(f"Skipping file {filename} due to audio decoding exception: {file_error}")
+            continue
+            
     return song_database, song_mapping
 
 song_database, song_mapping = build_cloud_database()
@@ -85,10 +95,10 @@ def pipeline_and_match(query_audio_path):
     return predicted_song, max_peak_votes, best_offsets_list, times, frequencies, Sxx_db, time_indices, freq_indices
 
 st.set_page_config(page_title="EE200 Matcher Engine", page_icon="🎵", layout="wide")
-st.title("EE200 Audio Identification Panel")
+st.title("🎵 EE200 Audio Identification Panel")
 
 if not song_database:
-    st.error("Audio library directory missing from current directory workspace branch.")
+    st.error("Audio library directory missing or empty in current repository branch workspace.")
 else:
     mode = st.sidebar.radio("Select Application Mode:", ["(i) Single-Clip Mode", "(ii) Batch Mode"])
 
@@ -142,11 +152,11 @@ else:
                 
                 results.append({"filename": up_file.name, "prediction": pred})
                 os.remove(temp_b_path)
-            
+      
             df_results = pd.DataFrame(results)[["filename", "prediction"]]
             st.dataframe(df_results)
             st.download_button(
-                label="Download official results.csv File",
+                label="📥 Download official results.csv File",
                 data=df_results.to_csv(index=False).encode('utf-8'),
                 file_name="results.csv",
                 mime="text/csv"
