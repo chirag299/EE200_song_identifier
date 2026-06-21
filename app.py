@@ -229,8 +229,8 @@ def plot_vote_comparison(all_votes, predicted):
 
 def plot_spectrogram(times, freqs, Sxx_db):
     mask = freqs <= MAX_FREQ_DISPLAY
-    step = max(1, len(times) // 400)  # heavier downsample: smaller payload sent to the browser
-    z = Sxx_db[mask][:, ::step].astype(np.float32)  # half the bytes of float64, same visual result
+    step = max(1, len(times) // 400)  
+    z = Sxx_db[mask][:, ::step].astype(np.float32)  
     fig = go.Figure(go.Heatmap(z=z, x=times[::step], y=freqs[mask],
                                 colorscale="Plasma", colorbar=dict(title="dB")))
     fig.update_layout(template="plotly_dark", height=420,
@@ -286,7 +286,7 @@ else:
 
         if uploaded_file is not None:
             ext = os.path.splitext(uploaded_file.name)[1] or ".wav"
-            temp_path = f"temp_{uuid.uuid4().hex}{ext}"  # unique per request: no cross-session collisions
+            temp_path = f"temp_{uuid.uuid4().hex}{ext}"  
             try:
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
@@ -358,5 +358,7 @@ else:
 
             df_results = pd.DataFrame(results)
             st.dataframe(df_results, use_container_width=True)
-            st.download_button("📥 Download results.csv", df_results.to_csv(index=False).encode("utf-8"),
+
+            csv_df = df_results[["filename", "prediction"]]
+            st.download_button("📥 Download results.csv", csv_df.to_csv(index=False).encode("utf-8"),
                                 file_name="results.csv", mime="text/csv")
