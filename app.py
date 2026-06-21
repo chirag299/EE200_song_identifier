@@ -1,163 +1,362 @@
 import streamlit as st
 import os
-import librosa
+import uuid
 import numpy as np
+import librosa
 import scipy.signal as signal
 from scipy.ndimage import maximum_filter
-import matplotlib.pyplot as plt
 import pandas as pd
+import plotly.graph_objects as go
 
-TARGET_SR = 16000          
-NEIGHBORHOOD_SIZE = 7      
-DYNAMIC_OFFSET_DB = 15     
-database_folder = 'EE200 Project Song Database'
+TARGET_SR = 16000
+NEIGHBORHOOD_SIZE = 7
+DYNAMIC_OFFSET_DB = 15
+MAX_FREQ_DISPLAY = 4000
+DATABASE_FOLDER = "EE200 Project Song Database"
 
-@st.cache_resource
-def build_cloud_database():
-    if not os.path.exists(database_folder):
-        return {}, {}
-    
-    audio_files = sorted([f for f in os.listdir(database_folder) if f.endswith('.mp3')])
-    song_database = {}
-    song_mapping = {}
-    
-    for song_idx, filename in enumerate(audio_files):
-        try:
-            song_path = os.path.join(database_folder, filename)
+st.set_page_config(page_title="EE200 Audio ID Engine", page_icon="🎧", layout="wide")
 
-            y, fs = librosa.load(song_path, sr=TARGET_SR)
-            _, _, Sxx = signal.spectrogram(y, fs, nperseg=2048)
-            Sxx_db = 10 * np.log10(Sxx + 1e-10)
-            
-            local_max = maximum_filter(Sxx_db, size=NEIGHBORHOOD_SIZE) == Sxx_db
-            peaks_mask = local_max & (Sxx_db > (np.mean(Sxx_db) + DYNAMIC_OFFSET_DB))
-            f_coor, t_coor = np.where(peaks_mask)
-            peaks = list(zip(t_coor, f_coor))
-            
-            num_peaks = len(peaks)
-            for i in range(num_peaks):
-                t1, f1 = peaks[i]
-                for j in range(i + 1, min(i + 15, num_peaks)): 
-                    t2, f2 = peaks[j]
-                    dt = t2 - t1
-                    if 1 <= dt <= 30: 
-                        hash_key = (f1, f2, dt)
-                        if hash_key not in song_database:
-                            song_database[hash_key] = []
-                        song_database[hash_key].append((song_idx, t1))
-    
-            song_mapping[song_idx] = os.path.splitext(filename)[0]
-            
-        except Exception as file_error:
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;800&display=swap');
 
-            print(f"Skipping file {filename} due to audio decoding exception: {file_error}")
-            continue
-            
-    return song_database, song_mapping
+html, body, [class*="css"], .stApp, .stMarkdown, .stRadio, .stButton {
+    font-family: 'Poppins', sans-serif;
+}
 
-song_database, song_mapping = build_cloud_database()
+.main-header {
+    background: linear-gradient(120deg, #7b2ff7, #f107a3, #00d2ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-size: 3.2rem;
+    font-weight: 800;
+    text-align: center;
+    padding-bottom: 0.2rem;
+}
+.subtitle {
+    text-align: center;
+    color: #aeb4c4;
+    font-size: 1.2rem;
+    font-weight: 400;
+    margin-bottom: 1.8rem;
+}
+.section-title {
+    font-size: 1.7rem;
+    font-weight: 700;
+    color: #f5f5f7;
+    border-left: 5px solid #f107a3;
+    padding-left: 14px;
+    margin-top: 1.6rem;
+    margin-bottom: 0.8rem;
+}
+div[data-testid="stMetric"] {
+    background: linear-gradient(135deg, rgba(123,47,247,0.18), rgba(0,210,255,0.12));
+    border: 1px solid rgba(123,47,247,0.35);
+    border-radius: 14px;
+    padding: 16px 20px;
+}
+div[data-testid="stMetricValue"] {
+    font-size: 2rem !important;
+    font-weight: 700 !important;
+    color: #ffffff !important;
+}
+div[data-testid="stMetricLabel"] {
+    font-size: 1.05rem !important;
+    color: #c9c9d4 !important;
+    font-weight: 500 !important;
+}
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #17172e, #0c0c1a);
+}
+section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] .stRadio div {
+    font-size: 1.08rem !important;
+    color: #e6e6f0 !important;
+}
+.section-divider {
+    border: none;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #f107a3, transparent);
+    margin: 1.8rem 0;
+}
+</style>
+""", unsafe_allow_html=True)
 
-def pipeline_and_match(query_audio_path):
-    y_query, fs = librosa.load(query_audio_path, sr=TARGET_SR)
-    frequencies, times, Sxx = signal.spectrogram(y_query, fs, nperseg=2048)
-    Sxx_db = 10 * np.log10(Sxx + 1e-10)
-    
+
+def style_fig(fig, title):
+    """Shared typography pass so every Plotly chart matches the rest of the UI."""
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color="#f5f5f7")),
+        font=dict(size=13, color="#d7d7e0"),
+        legend=dict(font=dict(size=12)),
+        margin=dict(l=45, r=20, t=60, b=45),
+    )
+    return fig
+
+def extract_peaks(Sxx_db):
+    """Returns (peaks as list of (t_idx, f_idx), time_idx array, freq_idx array)."""
     local_max = maximum_filter(Sxx_db, size=NEIGHBORHOOD_SIZE) == Sxx_db
     peaks_mask = local_max & (Sxx_db > (np.mean(Sxx_db) + DYNAMIC_OFFSET_DB))
-    freq_indices, time_indices = np.where(peaks_mask)
-    query_peaks = list(zip(time_indices, freq_indices))
-    
-    song_offsets = {song_idx: [] for song_idx in song_mapping.keys()}
-    num_peaks = len(query_peaks)
-    
-    for i in range(num_peaks):
-        t1_q, f1 = query_peaks[i]
-        for j in range(i + 1, min(i + 15, num_peaks)):
-            t2_q, f2 = query_peaks[j]
+    freq_idx, time_idx = np.where(peaks_mask)
+    peaks = list(zip(time_idx, freq_idx))
+    return peaks, time_idx, freq_idx
+
+
+def hash_peaks(peaks):
+    """Anchor-pair hashing: (f1, f2, dt) -> t1, for landmark matching."""
+    hashes = []
+    n = len(peaks)
+    for i in range(n):
+        t1, f1 = peaks[i]
+        for j in range(i + 1, min(i + 15, n)):
+            t2, f2 = peaks[j]
+            dt = t2 - t1
+            if 1 <= dt <= 30:
+                hashes.append(((f1, f2, dt), t1))
+    return hashes
+
+
+@st.cache_resource(show_spinner="Building fingerprint database from song library...")
+def build_database():
+    if not os.path.exists(DATABASE_FOLDER):
+        return {}, {}
+
+    audio_files = sorted(f for f in os.listdir(DATABASE_FOLDER) if f.endswith(".mp3"))
+    song_database = {}
+    song_mapping = {}
+
+    for filename in audio_files:
+        path = os.path.join(DATABASE_FOLDER, filename)
+        try:
+            y, fs = librosa.load(path, sr=TARGET_SR)
+            _, _, Sxx = signal.spectrogram(y, fs, nperseg=2048)
+            Sxx_db = 10 * np.log10(Sxx + 1e-10)
+            peaks, _, _ = extract_peaks(Sxx_db)
+            local_hashes = hash_peaks(peaks)
+
+            song_idx = len(song_mapping)
+            for hash_key, t1 in local_hashes:
+                song_database.setdefault(hash_key, []).append((song_idx, t1))
+            song_mapping[song_idx] = os.path.splitext(filename)[0]
+        except Exception as e:
+            print(f"Skipping {filename}: {e}")
+            continue
+
+    return song_database, song_mapping
+
+
+try:
+    song_database, song_mapping = build_database()
+except Exception as e:
+    st.error(f"🚫 Failed to build the song database: {e}")
+    st.stop()
+
+
+def pipeline_and_match(query_path):
+    y, fs = librosa.load(query_path, sr=TARGET_SR)
+    freqs, times, Sxx = signal.spectrogram(y, fs, nperseg=2048)
+    Sxx_db = 10 * np.log10(Sxx + 1e-10)
+    peaks, time_idx, freq_idx = extract_peaks(Sxx_db)
+
+    song_offsets = {idx: [] for idx in song_mapping}
+    peak_song_offset = {} 
+
+    n = len(peaks)
+    for i in range(n):
+        t1_q, f1 = peaks[i]
+        for j in range(i + 1, min(i + 15, n)):
+            t2_q, f2 = peaks[j]
             dt = t2_q - t1_q
             if 1 <= dt <= 30:
-                hash_key = (f1, f2, dt)
-                if hash_key in song_database:
-                    for song_idx, t1_s in song_database[hash_key]:
-                        song_offsets[song_idx].append(t1_s - t1_q)
-                        
-    best_song_idx, max_peak_votes, best_offsets_list = -1, 0, []
-    for song_idx, offsets in song_offsets.items():
-        if len(offsets) == 0: continue
-        counts, _ = np.histogram(offsets, bins=np.arange(min(offsets)-1, max(offsets)+2, 1))
-        current_max_peak = np.max(counts)
-        if current_max_peak > max_peak_votes:
-            max_peak_votes = current_max_peak
-            best_song_idx = song_idx
-            best_offsets_list = offsets
+                key = (f1, f2, dt)
+                if key in song_database:
+                    for song_idx, t1_s in song_database[key]:
+                        offset = t1_s - t1_q
+                        song_offsets[song_idx].append(offset)
+                        peak_song_offset.setdefault(i, []).append((song_idx, offset))
 
-    predicted_song = song_mapping[best_song_idx] if best_song_idx != -1 else "Unknown Track"
-    return predicted_song, max_peak_votes, best_offsets_list, times, frequencies, Sxx_db, time_indices, freq_indices
+    all_song_votes = {}
+    best_idx, best_votes, best_offsets, best_bin = -1, 0, [], None
 
-st.set_page_config(page_title="EE200 Matcher Engine", page_icon="🎵", layout="wide")
-st.title("🎵 EE200 Audio Identification Panel")
+    for idx, offsets in song_offsets.items():
+        if not offsets:
+            continue
+        counts, edges = np.histogram(offsets, bins=np.arange(min(offsets) - 1, max(offsets) + 2, 1))
+        peak_votes = int(np.max(counts))
+        all_song_votes[song_mapping[idx]] = peak_votes
+        if peak_votes > best_votes:
+            best_votes = peak_votes
+            best_idx = idx
+            best_offsets = offsets
+            best_bin = edges[np.argmax(counts)]
+
+    predicted_song = song_mapping.get(best_idx, "Unknown Track")
+
+    matched_t, matched_f, unmatched_t, unmatched_f = [], [], [], []
+    if best_idx != -1:
+        for i, (t, f) in enumerate(peaks):
+            contributions = peak_song_offset.get(i, [])
+            is_matched = any(s == best_idx and abs(o - best_bin) < 1 for s, o in contributions)
+            (matched_t if is_matched else unmatched_t).append(times[t])
+            (matched_f if is_matched else unmatched_f).append(freqs[f])
+    else:
+        unmatched_t = list(times[time_idx])
+        unmatched_f = list(freqs[freq_idx])
+
+    return {
+        "prediction": predicted_song,
+        "votes": best_votes,
+        "offsets": best_offsets,
+        "all_votes": all_song_votes,
+        "times": times,
+        "freqs": freqs,
+        "Sxx_db": Sxx_db,
+        "time_idx": time_idx,
+        "freq_idx": freq_idx,
+        "matched": (matched_t, matched_f),
+        "unmatched": (unmatched_t, unmatched_f),
+    }
+
+def plot_vote_comparison(all_votes, predicted):
+    if not all_votes:
+        return None
+    df = pd.DataFrame(list(all_votes.items()), columns=["Song", "Votes"]).sort_values("Votes", ascending=False)
+    colors = ["#f107a3" if s == predicted else "#3b3f6b" for s in df["Song"]]
+    fig = go.Figure(go.Bar(x=df["Song"], y=df["Votes"], marker_color=colors,
+                            text=df["Votes"], textposition="outside"))
+    fig.update_layout(template="plotly_dark", height=420, xaxis_tickangle=-30, showlegend=False)
+    return style_fig(fig, "🏆 Vote Comparison Across Candidate Songs")
+
+
+def plot_spectrogram(times, freqs, Sxx_db):
+    mask = freqs <= MAX_FREQ_DISPLAY
+    step = max(1, len(times) // 400)  # heavier downsample: smaller payload sent to the browser
+    z = Sxx_db[mask][:, ::step].astype(np.float32)  # half the bytes of float64, same visual result
+    fig = go.Figure(go.Heatmap(z=z, x=times[::step], y=freqs[mask],
+                                colorscale="Plasma", colorbar=dict(title="dB")))
+    fig.update_layout(template="plotly_dark", height=420,
+                       xaxis_title="Time (s)", yaxis_title="Frequency (Hz)")
+    return style_fig(fig, "🌈 Spectrogram")
+
+
+def plot_constellation(times, freqs, time_idx, freq_idx):
+    fig = go.Figure(go.Scatter(x=times[time_idx], y=freqs[freq_idx], mode="markers",
+                                marker=dict(color="#00f5d4", size=5)))
+    fig.update_layout(template="plotly_dark", height=420,
+                       xaxis_title="Time (s)", yaxis_title="Frequency (Hz)",
+                       yaxis_range=[0, MAX_FREQ_DISPLAY])
+    return style_fig(fig, "✨ Constellation Map")
+
+
+def plot_histogram(offsets):
+    fig = go.Figure(go.Histogram(x=offsets, marker_color="#7b2ff7"))
+    fig.update_layout(template="plotly_dark", height=420,
+                       xaxis_title="Offset (bins)", yaxis_title="Vote Count")
+    return style_fig(fig, "📊 Time-Offset Alignment Histogram")
+
+
+def plot_fingerprint_matches(matched, unmatched):
+    fig = go.Figure()
+    if unmatched[0]:
+        fig.add_trace(go.Scatter(x=unmatched[0], y=unmatched[1], mode="markers",
+                                  marker=dict(color="#3b3f6b", size=5), name="Unmatched peak"))
+    if matched[0]:
+        fig.add_trace(go.Scatter(x=matched[0], y=matched[1], mode="markers",
+                                  marker=dict(color="#f107a3", size=8, symbol="star"),
+                                  name="Verified fingerprint"))
+    fig.update_layout(template="plotly_dark", height=420,
+                       xaxis_title="Time (s)", yaxis_title="Frequency (Hz)",
+                       yaxis_range=[0, MAX_FREQ_DISPLAY])
+    return style_fig(fig, "🔑 Verified Fingerprint Matches")
+
+st.markdown('<div class="main-header">🎧 EE200 Audio Identification Engine</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Shazam-style landmark fingerprinting, built from scratch</div>', unsafe_allow_html=True)
 
 if not song_database:
-    st.error("Audio library directory missing or empty in current repository branch workspace.")
+    st.error("🚫 Song database folder is missing or empty — check the repo for 'EE200 Project Song Database'.")
 else:
-    mode = st.sidebar.radio("Select Application Mode:", ["(i) Single-Clip Mode", "(ii) Batch Mode"])
+    with st.sidebar:
+        st.markdown("### 🎛️ Mode")
+        mode = st.radio("Choose mode:", ["🎯 Single-Clip Mode", "📦 Batch Mode"], label_visibility="collapsed")
+        st.markdown("---")
+        st.caption(f"📚 Library size: **{len(song_mapping)}** songs indexed")
 
-    if mode == "(i) Single-Clip Mode":
-        st.subheader("Single-Clip Diagnostic Identification Viewer")
-        uploaded_file = st.file_uploader("Upload query clip:", type=["mp3", "wav"])
-        
+    if mode == "🎯 Single-Clip Mode":
+        st.markdown('<div class="section-title">🎯 Single-Clip Diagnostic Identification</div>', unsafe_allow_html=True)
+        uploaded_file = st.file_uploader("Upload a query clip", type=["mp3", "wav"])
+
         if uploaded_file is not None:
-            temp_path = "temp_user_query.wav"
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-                
-            pred, votes, offsets, times, frequencies, Sxx_db, t_idx, f_idx = pipeline_and_match(temp_path)
-            
-            st.metric(label="Predicted Song Match Result", value=pred)
-            st.metric(label="Matching Confidence Score", value=f"{votes} Alignment Votes")
-            
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            ext = os.path.splitext(uploaded_file.name)[1] or ".wav"
+            temp_path = f"temp_{uuid.uuid4().hex}{ext}"  # unique per request: no cross-session collisions
+            try:
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
 
-            axes[0].pcolormesh(times, frequencies, Sxx_db, shading='gouraud', cmap='magma')
-            axes[0].set_title("1. Dense 2D Spectrogram Input")
-            axes[0].set_ylim(0, 4000)
-            axes[0].set_ylabel("Frequency (Hz)")
-            axes[0].set_xlabel("Time (s)")
+                with st.spinner("Analyzing audio fingerprint..."):
+                    result = pipeline_and_match(temp_path)
 
-            axes[1].scatter(times[t_idx], frequencies[f_idx], color='cyan', s=10, marker='o')
-            axes[1].set_title(f"2. Extracted Constellation Map ({len(t_idx)} Peaks)")
-            axes[1].set_ylim(0, 4000)
-            axes[1].set_xlabel("Time (s)")
-            axes[1].set_facecolor('black')
+                col1, col2 = st.columns(2)
+                col1.metric("🎵 Predicted Match", result["prediction"])
+                col2.metric("✅ Confidence", f"{result['votes']} votes")
 
-            if len(offsets) > 0:
-                axes[2].hist(offsets, bins=np.arange(min(offsets)-1, max(offsets)+2, 1), color='royalblue', edgecolor='black')
-                axes[2].set_title("3. Time-Offset Alignment Histogram")
-                axes[2].set_xlabel("Time Offset Bin")
-                axes[2].set_ylabel("Vote Count")
-            st.pyplot(fig)
-            os.remove(temp_path)
+                if result["votes"] >= 20:
+                    st.success("High-confidence match.")
+                elif result["votes"] > 0:
+                    st.warning("Low-confidence match — treat with caution.")
+                else:
+                    st.error("No match found.")
 
-    elif mode == "(ii) Batch Mode":
-        st.subheader("Automated Batch Identification Processor")
-        uploaded_files = st.file_uploader("Upload query clips sequentially:", type=["mp3", "wav"], accept_multiple_files=True)
-        
+                st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+                vote_fig = plot_vote_comparison(result["all_votes"], result["prediction"])
+                if vote_fig:
+                    st.plotly_chart(vote_fig, use_container_width=True)
+
+                st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+                c1, c2 = st.columns(2)
+                c1.plotly_chart(plot_spectrogram(result["times"], result["freqs"], result["Sxx_db"]),
+                                 use_container_width=True)
+                c2.plotly_chart(plot_constellation(result["times"], result["freqs"],
+                                                    result["time_idx"], result["freq_idx"]),
+                                 use_container_width=True)
+
+                st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+                c3, c4 = st.columns(2)
+                if result["offsets"]:
+                    c3.plotly_chart(plot_histogram(result["offsets"]), use_container_width=True)
+                else:
+                    c3.info("No alignment data to plot.")
+                c4.plotly_chart(plot_fingerprint_matches(result["matched"], result["unmatched"]),
+                                 use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Couldn't process this file: {e}")
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+    else:  # Batch mode
+        st.markdown('<div class="section-title">📦 Automated Batch Identification</div>', unsafe_allow_html=True)
+        uploaded_files = st.file_uploader("Upload multiple clips", type=["mp3", "wav"], accept_multiple_files=True)
+
         if uploaded_files:
             results = []
+            progress = st.progress(0)
             for i, up_file in enumerate(uploaded_files):
-                temp_b_path = f"temp_batch_{i}.wav"
-                with open(temp_b_path, "wb") as f:
-                    f.write(up_file.getbuffer())
-                pred, _, _, _, _, _, _, _ = pipeline_and_match(temp_b_path)
-                
-                results.append({"filename": up_file.name, "prediction": pred})
-                os.remove(temp_b_path)
-      
-            df_results = pd.DataFrame(results)[["filename", "prediction"]]
-            st.dataframe(df_results)
-            st.download_button(
-                label="📥 Download official results.csv File",
-                data=df_results.to_csv(index=False).encode('utf-8'),
-                file_name="results.csv",
-                mime="text/csv"
-            )
+                ext = os.path.splitext(up_file.name)[1] or ".wav"
+                temp_path = f"temp_{uuid.uuid4().hex}{ext}"
+                try:
+                    with open(temp_path, "wb") as f:
+                        f.write(up_file.getbuffer())
+                    result = pipeline_and_match(temp_path)
+                    results.append({"filename": up_file.name, "prediction": result["prediction"],
+                                     "votes": result["votes"]})
+                except Exception:
+                    results.append({"filename": up_file.name, "prediction": "Error", "votes": 0})
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                progress.progress((i + 1) / len(uploaded_files))
+
+            df_results = pd.DataFrame(results)
+            st.dataframe(df_results, use_container_width=True)
+            st.download_button("📥 Download results.csv", df_results.to_csv(index=False).encode("utf-8"),
+                                file_name="results.csv", mime="text/csv")
